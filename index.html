@@ -1,0 +1,1510 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>TerraSeg — LULC Satellite Segmentation</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=Syne:wght@400;600;700;800&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --col-building: #3C1098;
+    --col-land: #8429F6;
+    --col-road: #6EC1E4;
+    --col-vegetation: #FEDD3A;
+    --col-water: #E2A929;
+    --col-unlabeled: #9B9B9B;
+    --bg: #020305;
+    --bg2: #050810;
+    --surface: rgba(10, 14, 23, 0.6);
+    --surface-solid: #0A0E17;
+    --border: rgba(110, 193, 228, 0.15);
+    --border-glow: rgba(110, 193, 228, 0.4);
+    --text: #E8EDF5;
+    --muted: #5a6b8c;
+    --accent: #6EC1E4;
+    --font-display: 'Syne', sans-serif;
+    --font-mono: 'Space Mono', monospace;
+    --shadow-3d: 0 10px 30px -10px rgba(0,0,0,0.8), inset 0 1px 0 rgba(255,255,255,0.1), inset 0 0 20px rgba(110, 193, 228, 0.05);
+  }
+
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--font-display);
+    min-height: 100vh;
+    overflow-x: hidden;
+    perspective: 1500px;
+    transform-style: preserve-3d;
+  }
+
+  /* GRID BACKGROUND - 3D FLOOR EFFECT */
+  body::before {
+    content: '';
+    position: fixed;
+    bottom: -50%; left: -50%; width: 200%; height: 200%;
+    background-image:
+      linear-gradient(rgba(110,193,228,0.06) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(110,193,228,0.06) 1px, transparent 1px);
+    background-size: 60px 60px;
+    pointer-events: none;
+    z-index: -2;
+    transform: rotateX(60deg) translateY(-100px) translateZ(-200px);
+    transform-origin: center center;
+    opacity: 0.5;
+    mask-image: radial-gradient(circle, black 30%, transparent 70%);
+    -webkit-mask-image: radial-gradient(circle, black 30%, transparent 70%);
+  }
+
+  /* SCANLINE OVERLAY with RGB Glitch */
+  body::after {
+    content: '';
+    position: fixed;
+    inset: 0;
+    background: repeating-linear-gradient(
+      0deg,
+      transparent,
+      transparent 2px,
+      rgba(0,0,0,0.1) 2px,
+      rgba(0,0,0,0.1) 4px
+    );
+    pointer-events: none;
+    z-index: 999;
+    mix-blend-mode: overlay;
+  }
+
+  /* ===== NAV ===== */
+  nav {
+    position: fixed;
+    top: 0; left: 0; right: 0;
+    z-index: 100;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 18px 40px;
+    background: rgba(6,8,15,0.85);
+    backdrop-filter: blur(20px);
+    border-bottom: 1px solid var(--border);
+  }
+
+  .nav-logo {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-family: var(--font-display);
+    font-weight: 800;
+    font-size: 1.2rem;
+    letter-spacing: 0.05em;
+    color: var(--text);
+    text-decoration: none;
+  }
+
+  .logo-icon {
+    width: 32px; height: 32px;
+    border-radius: 6px;
+    background: linear-gradient(135deg, var(--col-building), var(--col-land));
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    grid-template-rows: 1fr 1fr;
+    gap: 2px;
+    padding: 5px;
+    overflow: hidden;
+  }
+
+  .logo-icon span {
+    border-radius: 2px;
+    display: block;
+  }
+
+  .nav-links {
+    display: flex;
+    gap: 32px;
+    list-style: none;
+  }
+
+  .nav-links a {
+    color: var(--muted);
+    text-decoration: none;
+    font-family: var(--font-mono);
+    font-size: 0.72rem;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    transition: color 0.2s;
+  }
+
+  .nav-links a:hover { color: var(--accent); }
+
+  .nav-badge {
+    background: linear-gradient(90deg, var(--col-building), var(--col-land));
+    color: white;
+    font-family: var(--font-mono);
+    font-size: 0.65rem;
+    padding: 6px 14px;
+    border-radius: 4px;
+    letter-spacing: 0.1em;
+    cursor: pointer;
+    transition: opacity 0.2s;
+  }
+
+  .nav-badge:hover { opacity: 0.85; }
+
+  /* ===== HERO ===== */
+  .hero {
+    position: relative;
+    z-index: 1;
+    padding: 160px 40px 80px;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 60px;
+    max-width: 1800px;
+    margin: 0 auto;
+    align-items: center;
+  }
+
+  .hero-eyebrow {
+    font-family: var(--font-mono);
+    font-size: 0.7rem;
+    letter-spacing: 0.2em;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin-bottom: 20px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+
+  .hero-eyebrow::before {
+    content: '';
+    width: 28px; height: 1px;
+    background: var(--accent);
+    display: block;
+  }
+
+  .hero h1 {
+    font-weight: 800;
+    font-size: clamp(2.4rem, 4vw, 3.8rem);
+    line-height: 1.05;
+    letter-spacing: -0.02em;
+    margin-bottom: 24px;
+  }
+
+  .hero h1 .accent-line {
+    background: linear-gradient(90deg, var(--col-road), var(--col-land));
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+    display: block;
+  }
+
+  .hero-desc {
+    color: var(--muted);
+    font-size: 1.0rem;
+    line-height: 1.7;
+    max-width: 480px;
+    margin-bottom: 36px;
+  }
+
+  .hero-cta {
+    display: flex;
+    gap: 14px;
+    flex-wrap: wrap;
+  }
+
+  .btn-primary {
+    background: var(--accent);
+    color: var(--bg);
+    font-family: var(--font-mono);
+    font-size: 0.72rem;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    padding: 14px 28px;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    font-weight: 700;
+    transition: all 0.2s;
+    text-decoration: none;
+    display: inline-block;
+  }
+
+  .btn-primary:hover {
+    background: white;
+    transform: translateY(-2px);
+  }
+
+  .btn-outline {
+    background: transparent;
+    color: var(--text);
+    font-family: var(--font-mono);
+    font-size: 0.72rem;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    padding: 14px 28px;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    cursor: pointer;
+    transition: all 0.2s;
+    text-decoration: none;
+    display: inline-block;
+  }
+
+  .btn-outline:hover { border-color: var(--accent); color: var(--accent); }
+
+  /* HERO VISUAL */
+  .hero-visual {
+    position: relative;
+  }
+
+  .satellite-display {
+    position: relative;
+    border-radius: 12px;
+    overflow: hidden;
+    border: 1px solid var(--border);
+    background: var(--surface);
+    aspect-ratio: 1;
+    max-width: 520px;
+    margin-left: auto;
+  }
+
+  .satellite-display .display-header {
+    background: var(--bg2);
+    border-bottom: 1px solid var(--border);
+    padding: 10px 16px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-family: var(--font-mono);
+    font-size: 0.65rem;
+    color: var(--muted);
+    letter-spacing: 0.1em;
+  }
+
+  .display-header .dot {
+    width: 8px; height: 8px;
+    border-radius: 50%;
+  }
+
+  .display-header .status-live {
+    margin-left: auto;
+    color: #4ade80;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .status-live::before {
+    content: '';
+    width: 6px; height: 6px;
+    border-radius: 50%;
+    background: #4ade80;
+    animation: pulse 1.5s ease-in-out infinite;
+    display: block;
+  }
+
+  @keyframes pulse {
+    0%, 100% { opacity: 1; transform: scale(1); }
+    50% { opacity: 0.4; transform: scale(0.8); }
+  }
+
+  /* SEGMENTATION CANVAS */
+  .seg-canvas {
+    width: 100%;
+    aspect-ratio: 1;
+    display: grid;
+    grid-template-columns: repeat(8, 1fr);
+    grid-template-rows: repeat(8, 1fr);
+    gap: 1px;
+    background: #1a1a2e;
+    padding: 1px;
+    animation: fadeInCanvas 1s ease 0.5s both;
+  }
+
+  @keyframes fadeInCanvas {
+    from { opacity: 0; }
+    to { opacity: 1; }
+  }
+
+  .seg-cell {
+    border-radius: 1px;
+    transition: opacity 0.4s;
+  }
+
+  /* SCAN LINE EFFECT on canvas */
+  .seg-canvas-wrap {
+    position: relative;
+    overflow: hidden;
+  }
+
+  .seg-canvas-wrap::after {
+    content: '';
+    position: absolute;
+    left: 0; right: 0;
+    height: 3px;
+    background: rgba(110,193,228,0.4);
+    animation: scan 3s linear infinite;
+    pointer-events: none;
+  }
+
+  @keyframes scan {
+    0% { top: -5px; }
+    100% { top: 100%; }
+  }
+
+  /* Overlay labels on canvas */
+  .canvas-overlay {
+    position: absolute;
+    bottom: 12px; left: 12px;
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+    max-width: 90%;
+  }
+
+  .canvas-tag {
+    font-family: var(--font-mono);
+    font-size: 0.6rem;
+    padding: 3px 8px;
+    border-radius: 3px;
+    letter-spacing: 0.08em;
+    font-weight: 700;
+    text-transform: uppercase;
+  }
+
+  /* ===== STATS BAR ===== */
+  .stats-bar {
+    position: relative;
+    z-index: 1;
+    background: var(--bg2);
+    border-top: 1px solid var(--border);
+    border-bottom: 1px solid var(--border);
+    padding: 28px 40px;
+    display: flex;
+    justify-content: center;
+    gap: 0;
+  }
+
+  .stat-item {
+    text-align: center;
+    padding: 0 48px;
+    border-right: 1px solid var(--border);
+  }
+
+  .stat-item:last-child { border-right: none; }
+
+  .stat-num {
+    font-family: var(--font-mono);
+    font-size: 1.8rem;
+    font-weight: 700;
+    color: var(--accent);
+    display: block;
+    letter-spacing: -0.02em;
+  }
+
+  .stat-label {
+    font-family: var(--font-mono);
+    font-size: 0.62rem;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 0.15em;
+    margin-top: 4px;
+    display: block;
+  }
+
+  /* ===== UPLOAD SECTION ===== */
+  .section {
+    position: relative;
+    z-index: 1;
+    max-width: 1800px;
+    margin: 0 auto;
+    padding: 80px 40px;
+  }
+
+  .section-label {
+    font-family: var(--font-mono);
+    font-size: 0.7rem;
+    letter-spacing: 0.2em;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin-bottom: 12px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+
+  .section-label::before {
+    content: '';
+    width: 28px; height: 1px;
+    background: var(--accent);
+    display: block;
+  }
+
+  .section-title {
+    font-weight: 800;
+    font-size: clamp(1.8rem, 3vw, 2.6rem);
+    letter-spacing: -0.02em;
+    margin-bottom: 40px;
+    line-height: 1.1;
+  }
+
+  /* UPLOAD ZONE */
+  .upload-zone {
+    border: 2px dashed var(--border);
+    border-radius: 12px;
+    padding: 60px 40px;
+    text-align: center;
+    cursor: pointer;
+    transition: all 0.3s;
+    background: linear-gradient(135deg, rgba(60,16,152,0.06), rgba(110,193,228,0.04));
+    position: relative;
+    overflow: hidden;
+  }
+
+  .upload-zone::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(135deg, rgba(60,16,152,0.1), transparent);
+    opacity: 0;
+    transition: opacity 0.3s;
+  }
+
+  .upload-zone:hover {
+    border-color: var(--accent);
+    transform: translateY(-2px);
+  }
+
+  .upload-zone:hover::before { opacity: 1; }
+
+  .upload-zone.dragover {
+    border-color: var(--col-vegetation);
+    background: rgba(254,221,58,0.05);
+  }
+
+  .upload-icon {
+    width: 64px; height: 64px;
+    margin: 0 auto 20px;
+    background: linear-gradient(135deg, rgba(110,193,228,0.15), rgba(60,16,152,0.15));
+    border-radius: 12px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border: 1px solid var(--border);
+    font-size: 1.8rem;
+  }
+
+  .upload-title {
+    font-weight: 700;
+    font-size: 1.1rem;
+    margin-bottom: 8px;
+  }
+
+  .upload-subtitle {
+    font-family: var(--font-mono);
+    color: var(--muted);
+    font-size: 0.72rem;
+    letter-spacing: 0.05em;
+    margin-bottom: 24px;
+  }
+
+  .upload-formats {
+    display: flex;
+    gap: 8px;
+    justify-content: center;
+    flex-wrap: wrap;
+  }
+
+  .format-pill {
+    font-family: var(--font-mono);
+    font-size: 0.62rem;
+    padding: 4px 10px;
+    border-radius: 100px;
+    border: 1px solid var(--border);
+    color: var(--muted);
+    letter-spacing: 0.1em;
+  }
+
+  /* PIPELINE STEPS */
+  .pipeline {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 20px;
+    margin-top: 60px;
+  }
+
+  .pipeline-step {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 28px 24px;
+    position: relative;
+    overflow: hidden;
+    transition: border-color 0.3s, transform 0.3s;
+  }
+
+  .pipeline-step::before {
+    content: '';
+    position: absolute;
+    top: 0; left: 0; right: 0;
+    height: 2px;
+  }
+
+  .pipeline-step:nth-child(1)::before { background: var(--col-building); }
+  .pipeline-step:nth-child(2)::before { background: var(--col-road); }
+  .pipeline-step:nth-child(3)::before { background: var(--col-land); }
+  .pipeline-step:nth-child(4)::before { background: var(--col-vegetation); }
+
+  .pipeline-step:hover {
+    border-color: rgba(110,193,228,0.35);
+    transform: translateY(-3px);
+  }
+
+  .step-num {
+    font-family: var(--font-mono);
+    font-size: 0.65rem;
+    color: var(--muted);
+    letter-spacing: 0.15em;
+    text-transform: uppercase;
+    margin-bottom: 16px;
+  }
+
+  .step-icon {
+    font-size: 1.8rem;
+    margin-bottom: 12px;
+    display: block;
+  }
+
+  .step-title {
+    font-weight: 700;
+    font-size: 0.95rem;
+    margin-bottom: 8px;
+    letter-spacing: 0.01em;
+  }
+
+  .step-desc {
+    color: var(--muted);
+    font-size: 0.82rem;
+    line-height: 1.6;
+  }
+
+  /* ===== CLASS LEGEND ===== */
+  .classes-section {
+    position: relative;
+    z-index: 1;
+    background: var(--bg2);
+    border-top: 1px solid var(--border);
+    border-bottom: 1px solid var(--border);
+    padding: 80px 40px;
+  }
+
+  .classes-inner {
+    max-width: 1300px;
+    margin: 0 auto;
+  }
+
+  .classes-grid {
+    display: grid;
+    grid-template-columns: repeat(6, 1fr);
+    gap: 16px;
+    margin-top: 40px;
+  }
+
+  .class-card {
+    border-radius: 10px;
+    overflow: hidden;
+    border: 1px solid var(--border);
+    transition: transform 0.3s, box-shadow 0.3s;
+    cursor: default;
+    background: var(--surface);
+  }
+
+  .class-card:hover {
+    transform: translateY(-5px);
+    box-shadow: 0 16px 40px rgba(0,0,0,0.4);
+  }
+
+  .class-swatch {
+    height: 80px;
+    position: relative;
+    display: flex;
+    align-items: flex-end;
+    padding: 10px;
+  }
+
+  .class-swatch::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: repeating-linear-gradient(
+      45deg,
+      rgba(255,255,255,0.03),
+      rgba(255,255,255,0.03) 2px,
+      transparent 2px,
+      transparent 8px
+    );
+  }
+
+  .class-id {
+    font-family: var(--font-mono);
+    font-size: 0.65rem;
+    font-weight: 700;
+    color: rgba(255,255,255,0.5);
+    letter-spacing: 0.1em;
+    position: relative;
+    z-index: 1;
+  }
+
+  .class-info {
+    padding: 14px 14px 16px;
+  }
+
+  .class-name {
+    font-weight: 700;
+    font-size: 0.9rem;
+    margin-bottom: 4px;
+  }
+
+  .class-hex {
+    font-family: var(--font-mono);
+    font-size: 0.65rem;
+    color: var(--muted);
+    letter-spacing: 0.1em;
+  }
+
+  /* ===== RESULTS SECTION ===== */
+  .results-section {
+    position: relative;
+    z-index: 1;
+    max-width: 1300px;
+    margin: 0 auto;
+    padding: 80px 40px;
+  }
+
+  .results-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 24px;
+    margin-top: 40px;
+  }
+
+  .result-panel {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    overflow: hidden;
+  }
+
+  .result-panel-header {
+    background: var(--bg2);
+    border-bottom: 1px solid var(--border);
+    padding: 14px 20px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    font-family: var(--font-mono);
+    font-size: 0.68rem;
+    color: var(--muted);
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+  }
+
+  .panel-title-tag {
+    background: rgba(110,193,228,0.1);
+    color: var(--accent);
+    border: 1px solid rgba(110,193,228,0.2);
+    border-radius: 3px;
+    padding: 3px 8px;
+    font-size: 0.6rem;
+  }
+
+  /* DEMO IMAGE - FAKE SATELLITE */
+  .fake-satellite {
+    width: 100%;
+    aspect-ratio: 1;
+    display: grid;
+    grid-template-columns: repeat(12, 1fr);
+    grid-template-rows: repeat(12, 1fr);
+  }
+
+  .fake-seg {
+    width: 100%;
+    aspect-ratio: 1;
+    position: relative;
+  }
+
+  /* METRICS PANEL */
+  .metrics-panel {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    overflow: hidden;
+  }
+
+  .metrics-inner {
+    padding: 24px;
+  }
+
+  .metric-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 12px 0;
+    border-bottom: 1px solid rgba(110,193,228,0.07);
+  }
+
+  .metric-row:last-child { border-bottom: none; }
+
+  .metric-name {
+    font-family: var(--font-mono);
+    font-size: 0.72rem;
+    color: var(--muted);
+    letter-spacing: 0.08em;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+
+  .metric-dot {
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+
+  .metric-bar-wrap {
+    flex: 1;
+    margin: 0 20px;
+    height: 4px;
+    background: rgba(255,255,255,0.06);
+    border-radius: 2px;
+    overflow: hidden;
+  }
+
+  .metric-bar {
+    height: 100%;
+    border-radius: 2px;
+    animation: barGrow 1.2s cubic-bezier(0.16, 1, 0.3, 1) both;
+    animation-delay: var(--delay, 0s);
+  }
+
+  @keyframes barGrow {
+    from { width: 0; }
+    to { width: var(--w); }
+  }
+
+  .metric-val {
+    font-family: var(--font-mono);
+    font-size: 0.72rem;
+    font-weight: 700;
+    min-width: 36px;
+    text-align: right;
+  }
+
+  /* ===== ARCHITECTURE SECTION ===== */
+  .arch-section {
+    position: relative;
+    z-index: 1;
+    background: var(--bg2);
+    border-top: 1px solid var(--border);
+    padding: 80px 40px;
+  }
+
+  .arch-inner {
+    max-width: 1300px;
+    margin: 0 auto;
+  }
+
+  .arch-diagram {
+    margin-top: 40px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 36px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    overflow-x: auto;
+  }
+
+  .arch-block {
+    flex-shrink: 0;
+    border-radius: 8px;
+    padding: 16px 14px;
+    text-align: center;
+    min-width: 90px;
+    border: 1px solid;
+    position: relative;
+  }
+
+  .arch-block-label {
+    font-family: var(--font-mono);
+    font-size: 0.6rem;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    margin-bottom: 6px;
+    opacity: 0.6;
+  }
+
+  .arch-block-name {
+    font-weight: 700;
+    font-size: 0.78rem;
+  }
+
+  .arch-arrow {
+    color: var(--muted);
+    font-size: 1.2rem;
+    flex-shrink: 0;
+  }
+
+  .arch-skip {
+    flex-shrink: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 4px;
+  }
+
+  .skip-line {
+    width: 2px;
+    height: 30px;
+    background: linear-gradient(to bottom, var(--col-land), transparent);
+    border-radius: 1px;
+  }
+
+  .skip-label {
+    font-family: var(--font-mono);
+    font-size: 0.55rem;
+    color: var(--col-land);
+    letter-spacing: 0.1em;
+    writing-mode: vertical-rl;
+    text-orientation: mixed;
+    transform: rotate(180deg);
+    opacity: 0.7;
+  }
+
+  /* ===== FOOTER ===== */
+  footer {
+    position: relative;
+    z-index: 1;
+    border-top: 1px solid var(--border);
+    padding: 40px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    max-width: 1300px;
+    margin: 0 auto;
+  }
+
+  .footer-logo {
+    font-weight: 800;
+    font-size: 1rem;
+    letter-spacing: 0.05em;
+    color: var(--text);
+  }
+
+  .footer-copy {
+    font-family: var(--font-mono);
+    font-size: 0.65rem;
+    color: var(--muted);
+    letter-spacing: 0.1em;
+  }
+
+  .footer-links {
+    display: flex;
+    gap: 24px;
+    list-style: none;
+  }
+
+  .footer-links a {
+    font-family: var(--font-mono);
+    font-size: 0.65rem;
+    color: var(--muted);
+    text-decoration: none;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    transition: color 0.2s;
+  }
+
+  .footer-links a:hover { color: var(--accent); }
+
+  /* ANIMATIONS */
+  @keyframes fadeUp {
+    from { opacity: 0; transform: translateY(24px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+
+  .hero-left { animation: fadeUp 0.8s cubic-bezier(0.16, 1, 0.3, 1) both; }
+  .hero-visual { animation: fadeUp 0.8s cubic-bezier(0.16, 1, 0.3, 1) 0.15s both; }
+
+  /* RESPONSIVE */
+  @media (max-width: 900px) {
+    .hero { grid-template-columns: 1fr; padding-top: 120px; }
+    .hero-visual { display: none; }
+    .classes-grid { grid-template-columns: repeat(3, 1fr); }
+    .pipeline { grid-template-columns: repeat(2, 1fr); }
+    .results-grid { grid-template-columns: 1fr; }
+    .stats-bar { flex-wrap: wrap; gap: 20px; }
+    .stat-item { border-right: none; }
+  }
+
+  @media (max-width: 600px) {
+    nav { padding: 16px 20px; }
+    .nav-links { display: none; }
+    .section, .results-section { padding: 60px 20px; }
+    .classes-grid { grid-template-columns: repeat(2, 1fr); }
+    .pipeline { grid-template-columns: 1fr; }
+    footer { flex-direction: column; gap: 20px; text-align: center; }
+    .footer-links { display: none; }
+  }
+
+  /* 3D TILT & GLASS CLASSES */
+  .tilt-card {
+    transform-style: preserve-3d;
+    transition: transform 0.1s cubic-bezier(0.25, 0.46, 0.45, 0.94), box-shadow 0.1s ease-out, border-color 0.3s;
+    box-shadow: var(--shadow-3d);
+    position: relative;
+    background: var(--surface);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    border: 1px solid var(--border);
+  }
+  
+  .tilt-card::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    background: linear-gradient(135deg, rgba(255,255,255,0.06), transparent);
+    border-radius: inherit;
+    z-index: 10;
+  }
+
+  .tilt-card:hover {
+    border-color: var(--accent);
+    box-shadow: 0 20px 50px rgba(0,0,0,0.9), inset 0 0 20px var(--border-glow);
+    z-index: 50;
+  }
+
+  nav {
+    position: fixed;
+    top: 0; left: 0; right: 0;
+    z-index: 1000 !important;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 18px 40px;
+    background: rgba(2,3,5,0.7) !important;
+    backdrop-filter: blur(24px) !important;
+    -webkit-backdrop-filter: blur(24px);
+    border-bottom: 1px solid rgba(255,255,255,0.05) !important;
+    box-shadow: 0 10px 30px rgba(0,0,0,0.5) !important;
+  }
+
+  /* 3D TACTILE BUTTONS */
+  .btn-primary {
+    background: linear-gradient(135deg, var(--accent), #8429F6) !important;
+    border: 1px solid rgba(255,255,255,0.2) !important;
+    box-shadow: 0 6px 20px rgba(0,0,0,0.6), inset 0 2px 0 rgba(255,255,255,0.2), inset 0 -2px 0 rgba(0,0,0,0.2) !important;
+    transform-style: preserve-3d;
+    transition: all 0.2s cubic-bezier(0.25, 0.46, 0.45, 0.94) !important;
+  }
+  .btn-primary:hover {
+    transform: translateY(-4px) scale(1.02) !important;
+    box-shadow: 0 15px 30px rgba(132,41,246,0.5), inset 0 2px 0 rgba(255,255,255,0.4), inset 0 -2px 0 rgba(0,0,0,0.2) !important;
+  }
+  .btn-primary:active {
+    transform: translateY(2px) scale(0.98) !important;
+    box-shadow: 0 2px 5px rgba(0,0,0,0.5), inset 0 2px 10px rgba(0,0,0,0.5) !important;
+  }
+
+  .btn-outline {
+    backdrop-filter: blur(12px);
+    box-shadow: 0 6px 15px rgba(0,0,0,0.4), inset 0 0 10px rgba(255,255,255,0.05) !important;
+    transition: all 0.2s cubic-bezier(0.25, 0.46, 0.45, 0.94) !important;
+  }
+  .btn-outline:hover {
+    transform: translateY(-3px) !important;
+    box-shadow: 0 12px 25px rgba(110,193,228,0.2), inset 0 0 15px rgba(110,193,228,0.1) !important;
+    background: rgba(110,193,228,0.05) !important;
+  }
+  
+  .arch-block {
+    box-shadow: 0 8px 25px rgba(0,0,0,0.6), inset 0 1px 0 rgba(255,255,255,0.05) !important;
+    transition: transform 0.2s;
+  }
+  .arch-block:hover {
+    transform: translateZ(20px) scale(1.05);
+  }
+  .scan-container::after {
+    content: '';
+    position: absolute;
+    top: -100%; left: 0; right: 0; height: 3px;
+    background: #6EC1E4;
+    animation: scanSweep 3s infinite linear;
+    pointer-events: none;
+    box-shadow: 0 0 15px 4px rgba(110,193,228,0.5), 0 2px 25px rgba(132,41,246,0.8);
+  }
+  @keyframes scanSweep {
+    0% { top: -20%; }
+    100% { top: 120%; }
+  }
+
+  /* Padding Overrides for tight integration */
+  .hero { padding: 80px 40px 30px !important; }
+  .section, .results-section, .classes-section, .arch-section { padding: 40px !important; }
+
+  /* Custom Sci-Fi Scrollbar */
+  ::-webkit-scrollbar {
+    width: 12px;
+  }
+  ::-webkit-scrollbar-track {
+    background: var(--bg);
+    border-left: 1px solid rgba(255,255,255,0.05);
+  }
+  ::-webkit-scrollbar-thumb {
+    background: rgba(110,193,228,0.3);
+    border-radius: 6px;
+    border: 3px solid var(--bg);
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: rgba(132,41,246,0.8);
+  }
+</style>
+</head>
+<body>
+
+<!-- NAV -->
+<nav>
+  <a href="#" class="nav-logo">
+    <div class="logo-icon">
+      <span style="background:#3C1098"></span>
+      <span style="background:#6EC1E4"></span>
+      <span style="background:#FEDD3A"></span>
+      <span style="background:#8429F6"></span>
+    </div>
+    TerraSeg
+  </a>
+  <div class="nav-badge">Deep ResU-Net v2</div>
+</nav>
+
+<!-- HERO -->
+<section class="hero">
+  <div class="hero-left">
+    <div class="hero-eyebrow">Semantic Segmentation System</div>
+    <h1>
+      Land-Use &amp;<br>
+      <span class="accent-line">Land-Cover</span>
+      Classification
+    </h1>
+    <p class="hero-desc">
+      High-precision LULC classification from satellite imagery using Deep Residual U-Net architecture. Identify Buildings, Roads, Vegetation, Water, and more at pixel level.
+    </p>
+    <div class="hero-cta">
+      <a href="#segmenter" onclick="document.getElementById('segmenter').scrollIntoView({ behavior: 'smooth', block: 'start' }); return false;" class="btn-primary">Run Segmentation →</a>
+      <a href="#architecture" onclick="document.getElementById('architecture').scrollIntoView({ behavior: 'smooth', block: 'start' }); return false;" class="btn-outline">View Architecture</a>
+    </div>
+  </div>
+
+  <div class="hero-visual">
+    <div class="satellite-display tilt-card">
+      <div class="display-header">
+        <span class="dot" style="background:#3C1098"></span>
+        <span class="dot" style="background:#8429F6"></span>
+        <span class="dot" style="background:#6EC1E4"></span>
+        <span>LULC_OUTPUT_0042.PNG</span>
+        <span class="status-live">LIVE INFERENCE</span>
+      </div>
+      <div class="seg-canvas-wrap" style="position:relative;">
+        <div class="seg-canvas" id="heroCanvas"></div>
+        <div class="canvas-overlay">
+          <span class="canvas-tag" style="background:rgba(60,16,152,0.8);color:white;">Building</span>
+          <span class="canvas-tag" style="background:rgba(132,41,246,0.8);color:white;">Land</span>
+          <span class="canvas-tag" style="background:rgba(110,193,228,0.85);color:#06080F;">Road</span>
+          <span class="canvas-tag" style="background:rgba(254,221,58,0.85);color:#06080F;">Vegetation</span>
+          <span class="canvas-tag" style="background:rgba(226,169,41,0.85);color:#06080F;">Water</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- STATS BAR -->
+<div class="stats-bar">
+  <div class="stat-item">
+    <span class="stat-num">93.7%</span>
+    <span class="stat-label">Mean IoU</span>
+  </div>
+  <div class="stat-item">
+    <span class="stat-num">6</span>
+    <span class="stat-label">LULC Classes</span>
+  </div>
+  <div class="stat-item">
+    <span class="stat-num">512px</span>
+    <span class="stat-label">Input Resolution</span>
+  </div>
+  <div class="stat-item">
+    <span class="stat-num">ResU-Net</span>
+    <span class="stat-label">Architecture</span>
+  </div>
+  <div class="stat-item">
+    <span class="stat-num">0.38s</span>
+    <span class="stat-label">Inference Time</span>
+  </div>
+</div>
+
+<!-- UPLOAD / SEGMENTER SECTION -->
+<section class="section" id="segmenter">
+  <div class="section-label">Inference Engine</div>
+  <h2 class="section-title">Upload Satellite Imagery</h2>
+
+  <div class="upload-zone tilt-card" id="dropZone">
+    <div class="upload-icon">🛰️</div>
+    <div class="upload-title">Use Sidebar Control Panel to Upload</div>
+    <div class="upload-subtitle">Drag and Drop your satellite image in the sidebar to initiate Deep Inference.</div>
+    <div class="upload-formats">
+      <span class="format-pill">GeoTIFF</span>
+      <span class="format-pill">PNG</span>
+      <span class="format-pill">JPEG</span>
+      <span class="format-pill">≥ 512 × 512 px</span>
+      <span class="format-pill">RGB Bands</span>
+    </div>
+  </div>
+
+  <!-- PIPELINE STEPS -->
+  <div class="pipeline">
+    <div class="pipeline-step tilt-card">
+      <div class="step-num">Step 01</div>
+      <span class="step-icon">📡</span>
+      <div class="step-title">Image Ingestion</div>
+      <p class="step-desc">Multi-spectral or RGB satellite images are normalized and tiled into 512×512 patches.</p>
+    </div>
+    <div class="pipeline-step tilt-card">
+      <div class="step-num">Step 02</div>
+      <span class="step-icon">🧠</span>
+      <div class="step-title">Deep Inference</div>
+      <p class="step-desc">Residual U-Net encoder-decoder extracts multi-scale spatial features via skip connections.</p>
+    </div>
+    <div class="pipeline-step tilt-card">
+      <div class="step-num">Step 03</div>
+      <span class="step-icon">🎨</span>
+      <div class="step-title">Class Mapping</div>
+      <p class="step-desc">Pixel-wise softmax assigns one of 6 LULC categories with per-class confidence scores.</p>
+    </div>
+    <div class="pipeline-step tilt-card">
+      <div class="step-num">Step 04</div>
+      <span class="step-icon">📊</span>
+      <div class="step-title">Export &amp; Report</div>
+      <p class="step-desc">Segmentation mask exported as GeoTIFF with IoU metrics and class distribution report.</p>
+    </div>
+  </div>
+</section>
+
+<!-- CLASS LEGEND -->
+<div class="classes-section" id="classes">
+  <div class="classes-inner">
+    <div class="section-label">Taxonomy</div>
+    <h2 class="section-title">LULC Class Definitions</h2>
+    <div class="classes-grid">
+      <div class="class-card tilt-card">
+        <div class="class-swatch" style="background:#3C1098">
+          <span class="class-id">ID: 0</span>
+        </div>
+        <div class="class-info">
+          <div class="class-name">Building</div>
+          <div class="class-hex">#3C1098 · [60, 16, 152]</div>
+        </div>
+      </div>
+      <div class="class-card tilt-card">
+        <div class="class-swatch" style="background:#8429F6">
+          <span class="class-id">ID: 1</span>
+        </div>
+        <div class="class-info">
+          <div class="class-name">Land</div>
+          <div class="class-hex">#8429F6 · [132, 41, 246]</div>
+        </div>
+      </div>
+      <div class="class-card tilt-card">
+        <div class="class-swatch" style="background:#6EC1E4">
+          <span class="class-id">ID: 2</span>
+        </div>
+        <div class="class-info">
+          <div class="class-name">Road</div>
+          <div class="class-hex">#6EC1E4 · [110, 193, 228]</div>
+        </div>
+      </div>
+      <div class="class-card tilt-card">
+        <div class="class-swatch" style="background:#FEDD3A">
+          <span class="class-id">ID: 3</span>
+        </div>
+        <div class="class-info">
+          <div class="class-name">Vegetation</div>
+          <div class="class-hex">#FEDD3A · [254, 221, 58]</div>
+        </div>
+      </div>
+      <div class="class-card tilt-card">
+        <div class="class-swatch" style="background:#E2A929">
+          <span class="class-id">ID: 4</span>
+        </div>
+        <div class="class-info">
+          <div class="class-name">Water</div>
+          <div class="class-hex">#E2A929 · [226, 169, 41]</div>
+        </div>
+      </div>
+      <div class="class-card tilt-card">
+        <div class="class-swatch" style="background:#9B9B9B">
+          <span class="class-id">ID: 5</span>
+        </div>
+        <div class="class-info">
+          <div class="class-name">Unlabeled</div>
+          <div class="class-hex">#9B9B9B · [155, 155, 155]</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- RESULTS SECTION -->
+<section class="results-section" id="results">
+  <div class="section-label">Performance</div>
+  <h2 class="section-title">Model Accuracy Metrics</h2>
+
+  <div class="results-grid">
+    <!-- LEFT: fake segmentation demo -->
+    <div class="result-panel tilt-card">
+      <div class="result-panel-header">
+        <span>Segmentation Output</span>
+        <span class="panel-title-tag">DEMO</span>
+      </div>
+      <div id="demoSeg" style="width:100%;aspect-ratio:1;display:grid;grid-template-columns:repeat(16,1fr);grid-template-rows:repeat(16,1fr);gap:1px;background:#0C1020;padding:1px;"></div>
+    </div>
+
+    <!-- RIGHT: metrics -->
+    <div class="metrics-panel tilt-card">
+      <div class="result-panel-header">
+        <span>Per-Class IoU Score</span>
+        <span class="panel-title-tag">EVAL</span>
+      </div>
+      <div class="metrics-inner">
+        <div class="metric-row">
+          <span class="metric-name"><span class="metric-dot" style="background:#3C1098"></span>Building</span>
+          <div class="metric-bar-wrap"><div class="metric-bar" style="--w:[PCT_3]%;--delay:0.1s;background:#3C1098"></div></div>
+          <span class="metric-val" style="color:#8a7dcc">[PCT_3]%</span>
+        </div>
+        <div class="metric-row">
+          <span class="metric-name"><span class="metric-dot" style="background:#8429F6"></span>Land</span>
+          <div class="metric-bar-wrap"><div class="metric-bar" style="--w:[PCT_1]%;--delay:0.2s;background:#8429F6"></div></div>
+          <span class="metric-val" style="color:#a87de6">[PCT_1]%</span>
+        </div>
+        <div class="metric-row">
+          <span class="metric-name"><span class="metric-dot" style="background:#6EC1E4"></span>Road</span>
+          <div class="metric-bar-wrap"><div class="metric-bar" style="--w:[PCT_2]%;--delay:0.3s;background:#6EC1E4"></div></div>
+          <span class="metric-val" style="color:#6EC1E4">[PCT_2]%</span>
+        </div>
+        <div class="metric-row">
+          <span class="metric-name"><span class="metric-dot" style="background:#FEDD3A"></span>Vegetation</span>
+          <div class="metric-bar-wrap"><div class="metric-bar" style="--w:[PCT_4]%;--delay:0.4s;background:#FEDD3A"></div></div>
+          <span class="metric-val" style="color:#FEDD3A">[PCT_4]%</span>
+        </div>
+        <div class="metric-row">
+          <span class="metric-name"><span class="metric-dot" style="background:#E2A929"></span>Water</span>
+          <div class="metric-bar-wrap"><div class="metric-bar" style="--w:[PCT_0]%;--delay:0.5s;background:#E2A929"></div></div>
+          <span class="metric-val" style="color:#E2A929">[PCT_0]%</span>
+        </div>
+        <div class="metric-row">
+          <span class="metric-name"><span class="metric-dot" style="background:#9B9B9B"></span>Unlabeled</span>
+          <div class="metric-bar-wrap"><div class="metric-bar" style="--w:[PCT_5]%;--delay:0.6s;background:#9B9B9B"></div></div>
+          <span class="metric-val" style="color:#9B9B9B">[PCT_5]%</span>
+        </div>
+
+        <div style="margin-top:28px;padding-top:20px;border-top:1px solid var(--border);display:grid;grid-template-columns:1fr 1fr;gap:16px;">
+          <div style="background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:16px;text-align:center;">
+            <div style="font-family:var(--font-mono);font-size:1.5rem;font-weight:700;color:var(--accent)">93.7%</div>
+            <div style="font-family:var(--font-mono);font-size:0.6rem;color:var(--muted);letter-spacing:0.12em;text-transform:uppercase;margin-top:4px">Mean IoU</div>
+          </div>
+          <div style="background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:16px;text-align:center;">
+            <div style="font-family:var(--font-mono);font-size:1.5rem;font-weight:700;color:#FEDD3A">96.1%</div>
+            <div style="font-family:var(--font-mono);font-size:0.6rem;color:var(--muted);letter-spacing:0.12em;text-transform:uppercase;margin-top:4px">Pixel Acc.</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- DL_OUTPUT_MARKER -->
+
+<!-- ARCHITECTURE SECTION -->
+<div class="arch-section" id="architecture">
+  <div class="arch-inner">
+    <div class="section-label">Model Design</div>
+    <h2 class="section-title">Deep Residual U-Net Architecture</h2>
+    <p style="color:var(--muted);max-width:680px;line-height:1.7;font-size:0.95rem;margin-bottom:0">
+      A symmetrical encoder-decoder structure with residual skip connections. The encoder path uses ResNet-style blocks to capture multi-scale context; the decoder path reconstructs spatial resolution for dense pixel prediction.
+    </p>
+
+    <div class="arch-diagram">
+      <!-- INPUT -->
+      <div class="arch-block" style="background:rgba(110,193,228,0.08);border-color:rgba(110,193,228,0.3)">
+        <div class="arch-block-label">Input</div>
+        <div class="arch-block-name" style="color:#6EC1E4">512×512<br>RGB</div>
+      </div>
+      <div class="arch-arrow">→</div>
+
+      <!-- ENCODER -->
+      <div class="arch-block" style="background:rgba(60,16,152,0.15);border-color:rgba(60,16,152,0.4)">
+        <div class="arch-block-label">Encoder 1</div>
+        <div class="arch-block-name" style="color:#a389f0">ResBlock<br>64ch</div>
+      </div>
+      <div class="arch-arrow">→</div>
+
+      <div class="arch-block" style="background:rgba(60,16,152,0.15);border-color:rgba(60,16,152,0.4)">
+        <div class="arch-block-label">Encoder 2</div>
+        <div class="arch-block-name" style="color:#a389f0">ResBlock<br>128ch</div>
+      </div>
+      <div class="arch-arrow">→</div>
+
+      <div class="arch-block" style="background:rgba(60,16,152,0.15);border-color:rgba(60,16,152,0.4)">
+        <div class="arch-block-label">Encoder 3</div>
+        <div class="arch-block-name" style="color:#a389f0">ResBlock<br>256ch</div>
+      </div>
+      <div class="arch-arrow">→</div>
+
+      <!-- BOTTLENECK -->
+      <div class="arch-block" style="background:rgba(132,41,246,0.2);border-color:rgba(132,41,246,0.5)">
+        <div class="arch-block-label">Bottleneck</div>
+        <div class="arch-block-name" style="color:#c78df8">Bridge<br>512ch</div>
+      </div>
+      <div class="arch-arrow">→</div>
+
+      <!-- DECODER -->
+      <div class="arch-block" style="background:rgba(254,221,58,0.08);border-color:rgba(254,221,58,0.3)">
+        <div class="arch-block-label">Decoder 3</div>
+        <div class="arch-block-name" style="color:#FEDD3A">UpConv<br>256ch</div>
+      </div>
+      <div class="arch-arrow">→</div>
+
+      <div class="arch-block" style="background:rgba(254,221,58,0.08);border-color:rgba(254,221,58,0.3)">
+        <div class="arch-block-label">Decoder 2</div>
+        <div class="arch-block-name" style="color:#FEDD3A">UpConv<br>128ch</div>
+      </div>
+      <div class="arch-arrow">→</div>
+
+      <div class="arch-block" style="background:rgba(254,221,58,0.08);border-color:rgba(254,221,58,0.3)">
+        <div class="arch-block-label">Decoder 1</div>
+        <div class="arch-block-name" style="color:#FEDD3A">UpConv<br>64ch</div>
+      </div>
+      <div class="arch-arrow">→</div>
+
+      <!-- OUTPUT -->
+      <div class="arch-block" style="background:rgba(226,169,41,0.12);border-color:rgba(226,169,41,0.4)">
+        <div class="arch-block-label">Output</div>
+        <div class="arch-block-name" style="color:#E2A929">Softmax<br>6 cls</div>
+      </div>
+
+      <!-- SKIP CONNECTION INDICATOR -->
+      <div style="position:absolute;bottom:12px;right:24px;font-family:var(--font-mono);font-size:0.6rem;color:var(--col-land);opacity:0.7;letter-spacing:0.1em">
+        ↑ Skip connections bridge encoder→decoder at each scale
+      </div>
+    </div>
+
+    <!-- ARCH DETAILS GRID -->
+    <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:16px;margin-top:24px;">
+      <div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:20px;">
+        <div style="font-family:var(--font-mono);font-size:0.65rem;color:var(--muted);letter-spacing:0.1em;text-transform:uppercase;margin-bottom:8px">Loss Function</div>
+        <div style="font-weight:700;font-size:0.9rem">Dice + BCE<br><span style="color:var(--muted);font-size:0.75rem;font-weight:400">Combined loss</span></div>
+      </div>
+      <div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:20px;">
+        <div style="font-family:var(--font-mono);font-size:0.65rem;color:var(--muted);letter-spacing:0.1em;text-transform:uppercase;margin-bottom:8px">Optimizer</div>
+        <div style="font-weight:700;font-size:0.9rem">Adam<br><span style="color:var(--muted);font-size:0.75rem;font-weight:400">lr = 1e-4</span></div>
+      </div>
+      <div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:20px;">
+        <div style="font-family:var(--font-mono);font-size:0.65rem;color:var(--muted);letter-spacing:0.1em;text-transform:uppercase;margin-bottom:8px">Parameters</div>
+        <div style="font-weight:700;font-size:0.9rem">31.2M<br><span style="color:var(--muted);font-size:0.75rem;font-weight:400">trainable</span></div>
+      </div>
+      <div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:20px;">
+        <div style="font-family:var(--font-mono);font-size:0.65rem;color:var(--muted);letter-spacing:0.1em;text-transform:uppercase;margin-bottom:8px">Training</div>
+        <div style="font-weight:700;font-size:0.9rem">150 Epochs<br><span style="color:var(--muted);font-size:0.75rem;font-weight:400">batch = 8</span></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- FOOTER -->
+<footer>
+  <div class="footer-logo">TerraSeg</div>
+  <div class="footer-copy">© 2025 — Deep Residual U-Net LULC Framework</div>
+  <ul class="footer-links">
+    <li><a href="#">GitHub</a></li>
+    <li><a href="#">Paper</a></li>
+    <li><a href="#">Dataset</a></li>
+    <li><a href="#">API Docs</a></li>
+  </ul>
+</footer>
+
+<scr>
+
+<script>
+// 3D Tilt Effect
+document.addEventListener("DOMContentLoaded", () => {
+    const cards = document.querySelectorAll('.tilt-card');
+    cards.forEach(card => {
+        card.addEventListener('mousemove', e => {
+            const rect = card.getBoundingClientRect();
+            const x = e.clientX - rect.left;
+            const y = e.clientY - rect.top;
+            const centerX = rect.width / 2;
+            const centerY = rect.height / 2;
+            const rotateX = ((y - centerY) / centerY) * -8;
+            const rotateY = ((x - centerX) / centerX) * 8;
+            card.style.transform = `perspective(1000px) rotateX(${rotateX}deg) rotateY(${rotateY}deg) scale3d(1.02, 1.02, 1.02)`;
+        });
+        card.addEventListener('mouseleave', () => {
+            card.style.transform = `perspective(1000px) rotateX(0deg) rotateY(0deg) scale3d(1, 1, 1)`;
+        });
+    });
+});
+
+// 1. EXACT Color Palette from your Model
+const colors = ['#E2A929', '#8429F6', '#6EC1E4', '#3C1098', '#FEDD3A', '#9B9B9B'];
+
+// 2. Function to fill the grid with REAL model data
+function updateRealGrid(containerId, gridData) {
+  const container = document.getElementById(containerId);
+  if (!container) return;
+  container.innerHTML = '';
+  gridData.forEach(row => {
+    row.forEach(val => {
+      const cell = document.createElement('div');
+      cell.className = 'seg-cell';
+      cell.style.background = colors[val];
+      container.appendChild(cell);
+    });
+  });
+}
+// 3. LISTEN FOR DATA FROM STREAMLIT
+window.addEventListener("message", (event) => {
+  if (event.data.type === "UPDATE_MASK") {
+    updateRealGrid('demoSeg', event.data.mask);
+    // Smooth scroll to the results section
+    document.getElementById('results').scrollIntoView({ behavior: 'smooth' });
+  }
+});
+
+// 4. Keep your Hero Canvas (The small 8x8 one at the top)
+function fillCanvas(containerId, size) {
+  const container = document.getElementById(containerId);
+  if (!container) return;
+  container.innerHTML = '';
+  for (let i = 0; i < size * size; i++) {
+    const cell = document.createElement('div');
+    cell.className = 'seg-cell';
+    cell.style.background = colors[Math.floor(Math.random() * 6)];
+    container.appendChild(cell);
+  }
+}
+fillCanvas('heroCanvas', 8);
+fillCanvas('demoSeg', 16);
+
+</script>
+</body>
+</html>

@@ -1,0 +1,3 @@
+TensorFlow Version: 2.21.0
+Keras Version: 3.13.2
+Numpy Version: 2.4.3
